@@ -1,7 +1,7 @@
 import argparse
+import json
 import os
 import sys
-import json
 
 import xml.etree.ElementTree as ET
 
@@ -42,11 +42,25 @@ class ImporterConfig:
         return self.data_json["problem-id"]
 
 
-def create_problem(short_name):
+def create_problem(short_name, retry_count=0):
     cli_config.setup_login_by_url("main")
     session = problem.ProblemSession(cli_config.polygon_url, None, None)
 
-    problem_json = session.send_api_request("problem.create", {"name": short_name})
+    problem_json = None
+    try_id = 0
+    while problem_json is None and try_id <= retry_count:
+        create_name = short_name
+        if try_id > 0:
+            create_name += "-" + str(try_id + 1)
+        try:
+            problem_json = session.send_api_request("problem.create", {"name": create_name})
+        except Exception as e:
+            print(f"Failed to create problem with name {create_name}")
+            print(e)
+
+            if try_id + 1 <= retry_count:
+                try_id += 1
+                print("Retrying...")
     return problem_json
 
 
@@ -78,6 +92,7 @@ def main():
             description="Imports problems to polygon from a local archive",
     )
     parser.add_argument("src_dir", help="Path to a directory with problems", type=str)
+    parser.add_argument("--retry-create", help="Max number of retries while creating a problem", default=0, type=int)
 
     options = parser.parse_args(sys.argv[1:])
 
@@ -98,12 +113,14 @@ def main():
         tree = ET.parse(problem_xml_path)
         problem_node = tree.getroot()
         short_name = problem_node.attrib["short-name"]
+        print(f"Uploading problem {short_name}")
 
         if problem_config.get_problem_id() is None:
             try:
-                problem_json = create_problem(short_name)
+                problem_json = create_problem(short_name, retry_count=options.retry_create)
                 problem_config.set_short_name(problem_json["name"])
                 problem_config.set_problem_id(int(problem_json["id"]))
+                problem_config.save_config()
             except Exception as e:
                 print(f"Encountered an error while creating problem {short_name}, skipping...")
                 print(e)
